@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Training record — Training Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header id="topbar"></header>
+<main id="app"></main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="assets/config.js"></script>
+<script src="assets/common.js"></script>
+<script>
+(async function () {
+  const O = window.OTT;
+  const params = new URLSearchParams(location.search);
+  const id = params.get('id');
+  const ctx = await O.init({ page: 'person' });
+  if (!ctx) return;
+  if (!id) { location.replace('index.html'); return; }
+  O.showLoading('Loading training record…');
+
+  const [pRes, sRes, cRes] = await Promise.all([
+    O.sb.from('personnel').select('*, job_functions(name)').eq('id', id).maybeSingle(),
+    O.sb.from('v_training_status').select('course_id,mandatory,completion_date,expiry_date,status').eq('person_id', id),
+    O.sb.from('courses').select('id,abbreviation,name,sort_order')
+  ]);
+  const err = pRes.error || sRes.error || cRes.error;
+  if (err) { O.$('#app').innerHTML = '<div class="page page-narrow"><div class="card">' + O.esc(O.friendlyError(err)) + '</div></div>'; return; }
+  const p = pRes.data;
+  if (!p) { O.$('#app').innerHTML = '<div class="page page-narrow"><div class="card"><h1>Person not found</h1><p class="muted">This link may be out of date. ' + O.esc(O.C.CONTACT_LINE) + '</p></div></div>'; return; }
+  document.title = p.full_name + ' — Training';
+
+  const courseById = Object.fromEntries(cRes.data.map((c) => [c.id, c]));
+  const rows = sRes.data.map((r) => Object.assign({}, r, { c: courseById[r.course_id] || { abbreviation: '?', name: 'Unknown course' } }));
+  const order = { 'Expired': 0, 'Not done': 1, 'Due soon': 2, 'Valid': 3 };
+  rows.sort((a, b) => order[a.status] - order[b.status] || (a.c.sort_order || 0) - (b.c.sort_order || 0) || String(a.c.name).localeCompare(b.c.name));
+  const mand = rows.filter((r) => r.mandatory);
+  const other = rows.filter((r) => !r.mandatory);
+  const s = O.summarize(rows);
+  const urls = await O.photoUrls([p.photo_path]);
+  const fnName = (p.job_functions && p.job_functions.name) || 'No job function';
+
+  function dates(r) {
+    const n = O.daysUntil(r.expiry_date);
+    switch (r.status) {
+      case 'Not done': return 'Never completed';
+      case 'Expired':  return 'Expired ' + O.fmtDate(r.expiry_date) + ' · completed ' + O.fmtDate(r.completion_date);
+      case 'Due soon': return 'Expires ' + O.fmtDate(r.expiry_date) + ' (in ' + n + ' day' + (n === 1 ? '' : 's') + ')';
+      default: return 'Completed ' + O.fmtDate(r.completion_date) + (r.expiry_date ? ' · expires ' + O.fmtDate(r.expiry_date) : ' · no expiry');
+    }
+  }
+  const courseCard = (r) =>
+    '<div class="course" data-status="' + O.esc(r.status) + '">' +
+      '<span class="abbr">' + O.esc(r.c.abbreviation) + '</span>' +
+      '<div class="info"><div class="name">' + O.esc(r.c.name) + '</div><div class="dates">' + dates(r) + '</div></div>' +
+      O.pill(r.status) +
+    '</div>';
+
+  // compliance ring
+  const R = 31, CIRC = 2 * Math.PI * R, val = s.pct == null ? 0 : s.pct;
+  const ring =
+    '<svg width="80" height="80" viewBox="0 0 76 76" role="img" aria-label="Mandatory compliance ' + (s.pct == null ? 'not applicable' : s.pct + ' percent') + '">' +
+      '<circle cx="38" cy="38" r="' + R + '" fill="none" stroke="#33403B" stroke-width="9"/>' +
+      (val ? '<circle cx="38" cy="38" r="' + R + '" fill="none" stroke="#5FC4B4" stroke-width="9" stroke-linecap="round" stroke-dasharray="' + (CIRC * val / 100).toFixed(1) + ' ' + CIRC.toFixed(1) + '" transform="rotate(-90 38 38)"/>' : '') +
+      '<text x="38" y="44" text-anchor="middle" font-family="IBM Plex Sans, sans-serif" font-weight="700" font-size="17" fill="#F6F7F4">' + (s.pct == null ? '—' : s.pct + '%') + '</text>' +
+    '</svg>';
+  const darkPills = [
+    s['Due soon'] ? '<span class="dark-pill" style="background:#4A3A12;color:#FFD98A">' + s['Due soon'] + ' due soon</span>' : '',
+    s.Expired ? '<span class="dark-pill" style="background:#4E1C18;color:#FFB4AB">' + s.Expired + ' expired</span>' : '',
+    s['Not done'] ? '<span class="dark-pill" style="background:#33403B;color:#DDE2DE">' + s['Not done'] + ' not done</span>' : ''
+  ].join('');
+
+  O.$('#app').innerHTML =
+    (params.get('qr') ? '<div class="qr-banner"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3zM20 14v7M14 20h3"/></svg>Opened from QR code · signed in as ' + O.esc(ctx.email) + '</div>' : '') +
+    '<div class="page page-narrow">' +
+      '<section class="person-head">' +
+        O.photoHtml(urls[p.photo_path], p.full_name) +
+        '<div style="display:flex;flex-direction:column;gap:3px;min-width:0">' +
+          '<span class="mono small muted">' + O.esc(p.employee_no) + '</span>' +
+          '<h1>' + O.esc(p.full_name) + '</h1>' +
+          (p.position ? '<span style="color:var(--ink-2)">' + O.esc(p.position) + '</span>' : '') +
+          '<span class="small muted">' + O.esc([p.department, p.section].filter(Boolean).join(' · ')) + '</span>' +
+        '</div>' +
+      '</section>' +
+      '<div class="facts">' +
+        '<div class="fact"><div class="k">Job function</div><div class="v">' + O.esc(fnName) + '</div></div>' +
+        (p.employer ? '<div class="fact"><div class="k">Employer</div><div class="v">' + O.esc(p.employer) + '</div></div>' : '') +
+        '<div class="fact"><div class="k">Status</div><div class="v">' + O.esc(p.status) + '</div></div>' +
+      '</div>' +
+      '<div class="compliance">' + ring +
+        '<div style="display:flex;flex-direction:column;gap:6px">' +
+          '<div style="font-size:15px;font-weight:600">Mandatory compliance</div>' +
+          '<div class="sub">' + (s.required ? s.compliant + ' of ' + s.required + ' required courses in date' : 'No mandatory courses set for this job function') + '</div>' +
+          (darkPills ? '<div style="display:flex;gap:6px;flex-wrap:wrap">' + darkPills + '</div>' : '') +
+        '</div>' +
+      '</div>' +
+      '<section style="display:flex;flex-direction:column;gap:10px">' +
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px"><h2>Mandatory for ' + O.esc(fnName) + '</h2><span class="small muted">' + mand.length + '</span></div>' +
+        (mand.length ?
+          '<div class="chips" role="group" aria-label="Filter courses">' +
+            '<button class="chip" data-f="all" aria-pressed="true">All</button>' +
+            '<button class="chip" data-f="action" aria-pressed="false">Needs action</button>' +
+            '<button class="chip" data-f="valid" aria-pressed="false">In date</button>' +
+          '</div>' +
+          '<div class="course-list" id="mandList">' + mand.map(courseCard).join('') + '</div>'
+          : '<div class="card muted">No mandatory courses.</div>') +
+      '</section>' +
+      (other.length ?
+        '<section style="display:flex;flex-direction:column;gap:10px"><h2>Other training on record</h2><div class="course-list">' + other.map(courseCard).join('') + '</div></section>' : '') +
+      '<p class="foot-note">Record checked ' + O.fmtDate(O.isoDate(O.today())) + ' · ' + O.esc(O.C.CONTACT_LINE) + '</p>' +
+      (ctx.isAdmin ? '<p class="foot-note no-print"><a href="admin.html#personnel/' + p.id + '">Edit this person in Admin</a></p>' : '') +
+    '</div>';
+
+  O.$$('.chip[data-f]').forEach((b) => b.addEventListener('click', () => {
+    O.$$('.chip[data-f]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    const f = b.dataset.f;
+    O.$$('#mandList .course').forEach((el) => {
+      const st = el.dataset.status;
+      const ok = f === 'all' || (f === 'action' && (st === 'Expired' || st === 'Not done' || st === 'Due soon')) || (f === 'valid' && (st === 'Valid' || st === 'Due soon'));
+      el.classList.toggle('hidden', !ok);
+    });
+  }));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>People — Training Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+<header id="topbar"></header>
+<main id="app"></main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="assets/config.js"></script>
+<script src="assets/common.js"></script>
+<script>
+(async function () {
+  const O = window.OTT;
+  const ctx = await O.init({ page: 'people' });
+  if (!ctx) return;
+  O.showLoading('Loading people…');
+
+  let people, fns, status;
+  try {
+    [people, fns, status] = await Promise.all([
+      O.fetchAll(() => O.sb.from('personnel').select('id,employee_no,full_name,position,department,section,job_function_id,photo_path,status').eq('status', 'Active').order('full_name')),
+      O.fetchAll(() => O.sb.from('job_functions').select('id,name').order('name')),
+      O.fetchAll(() => O.sb.from('v_training_status').select('person_id,status,mandatory').eq('mandatory', true))
+    ]);
+  } catch (e) { O.$('#app').innerHTML = '<div class="page"><div class="card">' + O.esc(O.friendlyError(e)) + '</div></div>'; return; }
+
+  const fnName = Object.fromEntries(fns.map((f) => [f.id, f.name]));
+  const byPerson = {};
+  status.forEach((r) => { (byPerson[r.person_id] = byPerson[r.person_id] || []).push(r); });
+  people.forEach((p) => { p.sum = O.summarize(byPerson[p.id] || []); p.fn = fnName[p.job_function_id] || '—'; });
+  const depts = [...new Set(people.map((p) => p.department).filter(Boolean))].sort();
+
+  O.$('#app').innerHTML =
+    '<div class="page">' +
+      '<div class="page-head"><div><h1>People</h1><p>Search by name or employee number, or scan the QR code on a person’s badge.</p></div></div>' +
+      '<div class="toolbar">' +
+        '<label class="field" style="flex:1 1 260px">Search<input type="search" id="q" placeholder="Name or employee no." autofocus></label>' +
+        '<label class="field" style="flex:0 1 200px">Department<select id="dept"><option value="">All departments</option>' + depts.map((d) => '<option>' + O.esc(d) + '</option>').join('') + '</select></label>' +
+        '<label class="field" style="flex:0 1 200px">Job function<select id="fn"><option value="">All functions</option>' + fns.map((f) => '<option value="' + f.id + '">' + O.esc(f.name) + '</option>').join('') + '</select></label>' +
+        '<label class="field" style="flex:0 1 180px">Compliance<select id="band"><option value="">Any</option><option value="full">100%</option><option value="gap">Below 100%</option><option value="low">Below 50%</option></select></label>' +
+      '</div>' +
+      '<div class="muted small" id="count"></div>' +
+      '<div class="people-grid" id="grid"></div>' +
+      '<div style="text-align:center"><button class="btn hidden" id="more">Show more</button></div>' +
+    '</div>';
+
+  let shown = 0, list = [];
+  const PAGE = 60;
+
+  function apply() {
+    const q = O.$('#q').value.trim().toLowerCase();
+    const d = O.$('#dept').value, f = O.$('#fn').value, b = O.$('#band').value;
+    list = people.filter((p) =>
+      (!q || p.full_name.toLowerCase().includes(q) || p.employee_no.toLowerCase().includes(q)) &&
+      (!d || p.department === d) && (!f || p.job_function_id === f) &&
+      (!b || (b === 'full' && p.sum.pct === 100) || (b === 'gap' && p.sum.pct != null && p.sum.pct < 100) || (b === 'low' && p.sum.pct != null && p.sum.pct < 50)));
+    O.$('#grid').innerHTML = '';
+    shown = 0;
+    O.$('#count').textContent = list.length + ' of ' + people.length + ' active people';
+    more();
+  }
+
+  async function more() {
+    const slice = list.slice(shown, shown + PAGE);
+    shown += slice.length;
+    const urls = await O.photoUrls(slice.map((p) => p.photo_path));
+    O.$('#grid').insertAdjacentHTML('beforeend', slice.map((p) => {
+      const pc = p.sum.pct;
+      return '<a class="person-card" href="person.html?id=' + p.id + '">' +
+        O.photoHtml(urls[p.photo_path], p.full_name, 'photo-sm') +
+        '<div style="flex:1;min-width:0">' +
+          '<div class="nm">' + O.esc(p.full_name) + '</div>' +
+          '<div class="small muted"><span class="mono">' + O.esc(p.employee_no) + '</span> · ' + O.esc(p.fn) + '</div>' +
+          '<div class="meter" aria-hidden="true"><span style="width:' + (pc || 0) + '%;background:' + O.bandColor(pc) + '"></span></div>' +
+        '</div>' +
+        '<div class="mono small" style="width:44px;text-align:right">' + (pc == null ? '—' : pc + '%') + '</div>' +
+      '</a>';
+    }).join('') || (shown === 0 ? '<div class="empty">No one matches.</div>' : ''));
+    O.$('#more').classList.toggle('hidden', shown >= list.length);
+  }
+
+  O.$('#q').addEventListener('input', O.debounce(apply, 150));
+  ['dept', 'fn', 'band'].forEach((id) => O.$('#' + id).addEventListener('change', apply));
+  O.$('#more').addEventListener('click', more);
+  apply();
+})();
+</script>
+</body>
+</html>
